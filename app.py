@@ -51,6 +51,8 @@ def process_file(file, progress_bar):
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     result_filename = f"result_{timestamp}_{file.name}"
+    if not os.path.exists("results"):
+        os.makedirs("results")
     processed_df.to_csv(f"results/{result_filename}", index=False)
     return result_filename
 
