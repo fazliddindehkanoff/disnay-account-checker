@@ -5,21 +5,38 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
 
 
-def check_email(email: str) -> bool:
-    url = "https://registerdisney.go.com/jgc/v8/client/TPR-DVC.WEB-PROD/guest-flow?langPref=en-US&feature=no-password-reuse"
+def check_email(email: str, max_retries=3, retry_delay=5) -> bool:
+    url = "https://registerdisney.go.com/jgc/v8/client/TPR-DVC.WEB-PROD/guest-flow?langPref=en-US&feature=no-password-reuse"  # noqa
     payload = json.dumps({"email": email})
     headers = {
         "Accept-Language": "en-US,en;q=0.5",
         "content-type": "application/json",
     }
-    response = requests.request("POST", url, headers=headers, data=payload)
-    return response.json()["data"]["guestFlow"] == "LOGIN_FLOW"
+
+    for attempt in range(max_retries):
+        try:
+            response = requests.request(
+                "POST",
+                url,
+                headers=headers,
+                data=payload,
+            )
+            return response.json()["data"]["guestFlow"] == "LOGIN_FLOW"
+        except Exception:
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+            else:
+                return False
 
 
 def process_emails(df, progress_bar):
-    email_column = next((col for col in df.columns if col.lower() == "email"), None)
+    email_column = next(
+        (col for col in df.columns if col.lower() == "email"),
+        None,
+    )
     if email_column is None:
         return None
 
@@ -29,7 +46,11 @@ def process_emails(df, progress_bar):
 
     with ThreadPoolExecutor() as executor:
         future_to_email = {
-            executor.submit(check_email, email): email for email in df[email_column]
+            executor.submit(
+                check_email,
+                email,
+            ): email
+            for email in df[email_column]
         }
 
         for future in as_completed(future_to_email):
@@ -42,15 +63,28 @@ def process_emails(df, progress_bar):
     return df
 
 
-def process_file(file, progress_bar):
-    df = pd.read_csv(file) if file.name.endswith(".csv") else pd.read_excel(file)
+def save_uploaded_file(uploaded_file):
+    if not os.path.exists("uploads"):
+        os.makedirs("uploads")
+    file_path = os.path.join("uploads", uploaded_file.name)
+    with open(file_path, "wb") as f:
+        f.write(uploaded_file.getbuffer())
+    return file_path
+
+
+def process_file(file_path, progress_bar):
+    df = (
+        pd.read_csv(file_path)
+        if file_path.endswith(".csv")
+        else pd.read_excel(file_path)
+    )
 
     processed_df = process_emails(df, progress_bar)
     if processed_df is None:
         return None
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    result_filename = f"result_{timestamp}_{file.name}"
+    result_filename = f"result_{timestamp}_{os.path.basename(file_path)}"
     if not os.path.exists("results"):
         os.makedirs("results")
     processed_df.to_csv(f"results/{result_filename}", index=False)
@@ -89,16 +123,21 @@ def update_file_status(filename, status):
 
 st.title("Email Checker App")
 
-uploaded_file = st.file_uploader("Choose a CSV or Excel file", type=["csv", "xlsx"])
+uploaded_file = st.file_uploader(
+    "Choose a CSV or Excel file",
+    type=["csv", "xlsx"],
+)
 
 if uploaded_file is not None:
+    st.write("Saving uploaded file...")
+    saved_file_path = save_uploaded_file(uploaded_file)
     st.write("Processing file...")
     progress_bar = st.progress(0)
-    result_file = process_file(uploaded_file, progress_bar)
+    result_file = process_file(saved_file_path, progress_bar)
 
     if result_file is None:
         st.error(
-            "Error: The uploaded file does not contain a column named 'email' or 'Email'. Please upload a file with an email column."
+            "Error: The uploaded file does not contain a column named 'email' or 'Email'. Please upload a file with an email column."  # noqa
         )
     else:
         save_to_history(result_file, uploaded_file.name)
